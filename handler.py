@@ -31,7 +31,7 @@ Environment:
     HF_TOKEN          Hugging Face read token (LTX-2.5 is gated; accept its terms first)
     MODEL_DIR         where models live, default /runpod-volume/models/ltx-2.5
     LTX_QUANTIZATION  fp8-cast | none | ... ; default: fp8-cast below 60 GB of VRAM, else none
-    LTX_OFFLOAD       none | cpu | disk ; default none (use cpu if a job runs out of memory)
+    LTX_OFFLOAD       none | cpu | disk ; default: cpu below 60 GB of VRAM, else none
 """
 
 import base64
@@ -78,15 +78,23 @@ def ensure_models() -> dict:
     return paths
 
 
-def quantization() -> str | None:
-    q = os.environ.get("LTX_QUANTIZATION")
-    if q is None:
-        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-        q = "fp8-cast" if vram_gb < 60 else "none"
-        print(f"GPU {torch.cuda.get_device_name(0)} ({vram_gb:.0f} GB) -> quantization {q}")
-    return None if q.lower() == "none" else q
+def memory_settings() -> tuple[str | None, str]:
+    """Quantization and offload mode for this GPU; env vars override the defaults.
+
+    Below 60 GB of VRAM the 22B transformer plus the 12B text encoder don't fit even in fp8
+    (a 48 GB card runs out of memory), so weights are also streamed from CPU RAM.
+    """
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+    small = vram_gb < 60
+    q = os.environ.get("LTX_QUANTIZATION") or ("fp8-cast" if small else "none")
+    offload = os.environ.get("LTX_OFFLOAD") or ("cpu" if small else "none")
+    print(f"GPU {torch.cuda.get_device_name(0)} ({vram_gb:.0f} GB) -> quantization {q}, offload {offload}")
+    return (None if q.lower() == "none" else q), offload
 
 
+# Like the library's CLI main(), build and run the pipeline under inference_mode: weights and
+# tensors are created as inference tensors and must never be tracked by autograd.
+@torch.inference_mode()
 def load_pipeline():
     """Build the distilled pipeline once, exactly as the library's CLI does."""
     global PIPELINE, ARGS
@@ -109,12 +117,12 @@ def load_pipeline():
         "--video-vae-path", paths["video_vae"],
         "--audio-vae-path", paths["audio_vae"],
         "--spatial-upsampler-path", paths["upsampler"],
-        "--offload", os.environ.get("LTX_OFFLOAD", "none"),
         # required by the CLI parser; each job supplies its own
         "--prompt", "placeholder",
         "--output-path", "/tmp/placeholder.mp4",
     ]
-    q = quantization()
+    q, offload = memory_settings()
+    argv += ["--offload", offload]
     if q:
         argv += ["--quantization", q]
 
@@ -145,6 +153,7 @@ def load_pipeline():
     return took
 
 
+@torch.inference_mode()
 def generate(prompt: str, width: int, height: int, num_frames: int, fps: int, seed: int) -> tuple[str, int]:
     """Run one generation; return the encoded MP4 path and the frame count actually used."""
     from ltx_core.model.video_vae import AUTO_TILING, get_video_chunks_number
@@ -213,9 +222,12 @@ def handler(event: dict) -> dict:
             "load_time_seconds": round(load_time, 1),
         }
     except torch.cuda.OutOfMemoryError as e:
+        # The GPU is left full, so every later job on this worker would fail too:
+        # ask RunPod to replace the worker after this job.
         return {
-            "error": f"CUDA out of memory: {e}. Set LTX_OFFLOAD=cpu on the endpoint, or use a larger GPU.",
+            "error": f"CUDA out of memory: {e}. Try LTX_OFFLOAD=cpu (or disk), or a larger GPU.",
             "traceback": traceback.format_exc(),
+            "refresh_worker": True,
         }
     except Exception as e:  # report instead of crashing the worker
         return {"error": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()}

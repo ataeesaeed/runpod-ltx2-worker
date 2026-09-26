@@ -24,7 +24,7 @@ backend for `ig-story-pipeline`.
 | `HF_TOKEN` | none | Hugging Face read token (required for the gated model) |
 | `MODEL_DIR` | `/runpod-volume/models/ltx-2.5` | where the model files live |
 | `LTX_QUANTIZATION` | `fp8-cast` below 60 GB VRAM, else `none` | transformer weight format |
-| `LTX_OFFLOAD` | `none` | set to `cpu` if jobs run out of GPU memory (slower) |
+| `LTX_OFFLOAD` | `cpu` below 60 GB VRAM, else `none` | stream weights from CPU RAM (slower, fits 48 GB cards) |
 
 ## API
 
