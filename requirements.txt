@@ -1,12 +1,7 @@
-runpod>=1.7.0
-torch>=2.4.0
-torchvision
-torchaudio
-ltx-core
-ltx-pipelines
-imageio
-imageio-ffmpeg
-accelerate
-transformers
-safetensors
+# The Dockerfile installs everything (torch cu132, natten, LTX-2 from a pinned commit).
+# Listed here for reference only.
+runpod
 huggingface_hub
+torch==2.13.0
+ltx-core @ git+https://github.com/Lightricks/LTX-2.git@a95ab856bf29407b6b066ede0abe1846050db56c#subdirectory=packages/ltx-core
+ltx-pipelines @ git+https://github.com/Lightricks/LTX-2.git@a95ab856bf29407b6b066ede0abe1846050db56c#subdirectory=packages/ltx-pipelines
